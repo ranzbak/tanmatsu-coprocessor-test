@@ -1,1 +1,1 @@
-# Example for MIPI DSI abstraction layer
+# Example for Tanmatsu coprocessor
