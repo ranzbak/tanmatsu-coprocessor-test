@@ -543,6 +543,21 @@ void app_main(void) {
 
     example_bsp_enable_dsi_phy_power();
 
+    gpio_config_t pmod_conf = {
+        .pin_bit_mask = BIT64(14),
+        .mode = GPIO_MODE_INPUT_OUTPUT,
+        .pull_up_en = 0,
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    gpio_config(&pmod_conf);
+
+    gpio_set_level(14, false);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(14, true);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     esp_lcd_panel_handle_t mipi_dpi_panel = NULL;
     size_t h_res = 0;
     size_t v_res = 0;
