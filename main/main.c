@@ -89,6 +89,7 @@ void example_initialize_i2c_bus() {
 }
 
 static int i2c_scan(i2c_master_bus_handle_t bus_handle) {
+    int retval = 0;
     uint8_t address;
     printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\r\n");
     for (int i = 0; i < 128; i += 16) {
@@ -98,6 +99,9 @@ static int i2c_scan(i2c_master_bus_handle_t bus_handle) {
             address = i + j;
             esp_err_t ret = i2c_master_probe(bus_handle, address, 50);
             if (ret == ESP_OK) {
+                if (address == 0x5f) {
+                    retval = 1;
+                }
                 printf("%02x ", address);
             } else if (ret == ESP_ERR_TIMEOUT) {
                 printf("UU ");
@@ -108,7 +112,7 @@ static int i2c_scan(i2c_master_bus_handle_t bus_handle) {
         printf("\r\n");
     }
 
-    return 0;
+    return retval;
 }
 
 void example_bsp_enable_dsi_phy_power(void) {
@@ -371,13 +375,22 @@ void coprocessor_input_callback(tanmatsu_coprocessor_handle_t handle, tanmatsu_c
     }
 }
 
+void coprocessor_faults_callback(tanmatsu_coprocessor_handle_t handle, tanmatsu_coprocessor_pmic_faults_t* prev_faults,
+                                 tanmatsu_coprocessor_pmic_faults_t* faults) {
+    printf("Faults changed: %s %s %s %s %s %s %s %s %s\r\n", faults->watchdog ? "WATCHDOG" : "",
+           faults->boost ? "BOOST" : "", faults->chrg_input ? "CHRG_INPUT" : "",
+           faults->chrg_thermal ? "CHRG_THERMAL" : "", faults->chrg_safety ? "CHRG_SAFETY" : "",
+           faults->batt_ovp ? "BATT_OVP" : "", faults->ntc_cold ? "NTC_COLD" : "", faults->ntc_hot ? "NTC_HOT" : "",
+           faults->ntc_boost ? "NTC_BOOST" : "");
+}
+
 static void show_error(char* error) {
     lv_obj_t* box = lv_msgbox_create(NULL);
 
     lv_msgbox_add_title(box, "Error");
     lv_msgbox_add_text(box, error);
-    lv_obj_t* close_button = lv_msgbox_add_close_button(box);
-    lv_group_focus_obj(close_button);
+    // lv_obj_t* close_button = lv_msgbox_add_close_button(box);
+    // lv_group_focus_obj(close_button);
     lv_group_focus_freeze(lv_group_get_default(), true);
 }
 
@@ -417,11 +430,13 @@ static void enable_c6_cb(lv_event_t* event) {
 
 static void set_charging_current(lv_obj_t* roller) {
     // Font sizes shouldn't really be more than 3 digits :)
-    char buf[4];
+    char buf[8] = {0};
 
-    lv_roller_get_selected_str(roller, buf, 3);
+    lv_roller_get_selected_str(roller, buf, 7);
 
     uint32_t value = (uint32_t)strtol(buf, NULL, 10);
+
+    printf("Value: %lu\r\n", value);
 
     if (value == 512) {
         charging_current = 0;
@@ -433,7 +448,11 @@ static void set_charging_current(lv_obj_t* roller) {
         charging_current = 3;
     }
 
-    tanmatsu_coprocessor_set_pmic_charging_control(coprocessor_handle, !charging_enabled, charging_current);
+    if (coprocessor_handle) {
+        tanmatsu_coprocessor_set_pmic_charging_control(coprocessor_handle, !charging_enabled, charging_current);
+    } else {
+        printf("NOT READY\r\n");
+    }
 }
 
 static void on_charging_current_change(lv_event_t* e, uint32_t key) {
@@ -538,6 +557,14 @@ lv_obj_t* get_pmic_info_screen() {
     return settings_screen;
 }
 
+void set_label(char* text) {
+    lvgl_lock();
+    if (status_label) {
+        lv_label_set_text(status_label, text);
+    }
+    lvgl_unlock();
+}
+
 void app_main(void) {
     gpio_install_isr_service(0);
 
@@ -566,9 +593,23 @@ void app_main(void) {
     mipi_dpi_panel = st7701_get_panel();
     st7701_get_parameters(&h_res, &v_res, &color_fmt);
 
-    example_initialize_i2c_bus();
-    i2c_scan(i2c_bus_handle_internal);
+    lvgl_init(h_res, v_res, mipi_dpi_panel);
 
+    lvgl_lock();
+    // lv_group_set_focus_cb(lv_group_get_default(), focus_cb);
+    lv_screen_load(get_pmic_info_screen());
+    lvgl_unlock();
+
+    set_label("Starting I2C bus...");
+    example_initialize_i2c_bus();
+
+    set_label("Scanning I2C bus...");
+    if (!i2c_scan(i2c_bus_handle_internal)) {
+        show_error("Coprocessor not visible on I2C bus");
+        return;
+    }
+
+    set_label("Initializing coprocessor...");
     tanmatsu_coprocessor_config_t coprocessor_config = {
         .int_io_num = 6,
         .i2c_bus = i2c_bus_handle_internal,
@@ -577,12 +618,16 @@ void app_main(void) {
         .on_keyboard_change = coprocessor_keyboard_callback,
         .on_input_change = coprocessor_input_callback,
     };
-    ESP_ERROR_CHECK(tanmatsu_coprocessor_initialize(&coprocessor_config, &coprocessor_handle));
-
-    // tanmatsu_coprocessor_set_real_time(coprocessor_handle, 1728690650);
+    if (tanmatsu_coprocessor_initialize(&coprocessor_config, &coprocessor_handle) != ESP_OK) {
+        show_error("Failed to initialize coprocessor driver");
+        return;
+    }
 
     uint32_t rtc;
-    ESP_ERROR_CHECK(tanmatsu_coprocessor_get_real_time(coprocessor_handle, &rtc));
+    if (tanmatsu_coprocessor_get_real_time(coprocessor_handle, &rtc) != ESP_OK) {
+        show_error("Failed to read RTC value");
+        return;
+    }
 
     struct timeval rtc_timeval = {
         .tv_sec = rtc,
@@ -591,105 +636,106 @@ void app_main(void) {
 
     settimeofday(&rtc_timeval, NULL);
 
-    /*gpio_num_t gpio_sao_sda = 12;
-     gpio_num_t gpio_sao_scl = 13;
-     gpio_num_t gpio_sao_io1 = 15;
-     gpio_num_t gpio_sao_io2 = 0;
-     gpio_num_t gpio_sao_mtms = 4;
-     gpio_num_t gpio_sao_mtdo = 5;
-     gpio_num_t gpio_sao_mtck = 2;
-     gpio_num_t gpio_sao_mtdi = 3;
+    if (tanmatsu_coprocessor_set_display_backlight(coprocessor_handle, 255) != ESP_OK) {
+        show_error("Failed to set display backlight brightness");
+        return;
+    }
 
-     gpio_num_t pmod_gpios[8] = {
-         gpio_sao_scl, gpio_sao_io1, gpio_sao_mtms, gpio_sao_mtck,
-         gpio_sao_sda, gpio_sao_io2, gpio_sao_mtdo, gpio_sao_mtdi,
-     };
+    if (tanmatsu_coprocessor_set_pmic_charging_control(coprocessor_handle, !charging_enabled, charging_current) !=
+        ESP_OK) {
+        show_error("Failed to configure battery charging");
+        return;
+    }
 
-     gpio_config_t pmod_conf = {
-         .pin_bit_mask = BIT64(pmod_gpios[0]) | BIT64(pmod_gpios[1]) | BIT64(pmod_gpios[2]) | BIT64(pmod_gpios[3]) |
-                         BIT64(pmod_gpios[4]) | BIT64(pmod_gpios[5]) | BIT64(pmod_gpios[6]) | BIT64(pmod_gpios[7]),
-         .mode = GPIO_MODE_INPUT_OUTPUT,
-         .pull_up_en = 0,
-         .pull_down_en = 0,
-         .intr_type = GPIO_INTR_DISABLE,
-     };
-
-     gpio_config(&pmod_conf);
-
-     for (uint8_t i = 0; i < 8; i++) {
-         gpio_set_level(pmod_gpios[i], true);
-     }
-
-     while (true) {
-         for (uint8_t i = 0; i < 8; i++) {
-             printf("%u\r\n", i);
-             gpio_set_level(pmod_gpios[i], false);
-             vTaskDelay(pdMS_TO_TICKS(500));
-             gpio_set_level(pmod_gpios[i], true);
-         }
-     }
-     */
-
-    /*while (true) {
-        ESP_ERROR_CHECK(tanmatsu_coprocessor_get_real_time(coprocessor_handle, &rtc));
-        printf("Real time clock: %" PRIu32 "\r\n", rtc);
-
-        time_t t;
-        time(&t);
-        printf("Time library:    %s", ctime(&t));
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }*/
-
-    lvgl_init(h_res, v_res, mipi_dpi_panel);
-
-    lvgl_lock();
-    // lv_group_set_focus_cb(lv_group_get_default(), focus_cb);
-    lv_screen_load(get_pmic_info_screen());
-    lvgl_unlock();
-
-    tanmatsu_coprocessor_set_display_backlight(coprocessor_handle, 255);
-
-    tanmatsu_coprocessor_set_pmic_charging_control(coprocessor_handle, !charging_enabled, charging_current);
-    tanmatsu_coprocessor_set_pmic_otg_control(coprocessor_handle, false);
+    if (tanmatsu_coprocessor_set_pmic_otg_control(coprocessor_handle, true) != ESP_OK) {
+        show_error("Failed to enable OTG booster");
+        return;
+    }
 
     while (true) {
-        tanmatsu_coprocessor_set_pmic_adc_control(coprocessor_handle, true, false);
+        if (tanmatsu_coprocessor_set_pmic_adc_control(coprocessor_handle, true, false) != ESP_OK) {
+            set_label("Failed to trigger ADC read");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
         vTaskDelay(pdMS_TO_TICKS(600));
 
         tanmatsu_coprocessor_pmic_faults_t faults;
-        tanmatsu_coprocessor_get_pmic_faults(coprocessor_handle, &faults);
+        if (tanmatsu_coprocessor_get_pmic_faults(coprocessor_handle, &faults) != ESP_OK) {
+            set_label("Failed to read PMIC faults");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         uint16_t vbat;
-        tanmatsu_coprocessor_get_pmic_vbat(coprocessor_handle, &vbat);
+        if (tanmatsu_coprocessor_get_pmic_vbat(coprocessor_handle, &vbat) != ESP_OK) {
+            set_label("Failed to read vbat");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         uint16_t vsys;
-        tanmatsu_coprocessor_get_pmic_vsys(coprocessor_handle, &vsys);
+        if (tanmatsu_coprocessor_get_pmic_vsys(coprocessor_handle, &vsys) != ESP_OK) {
+            set_label("Failed to read vsys");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         uint16_t ts;
-        tanmatsu_coprocessor_get_pmic_ts(coprocessor_handle, &ts);
+        if (tanmatsu_coprocessor_get_pmic_ts(coprocessor_handle, &ts) != ESP_OK) {
+            set_label("Failed to read ts");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         uint16_t vbus;
-        tanmatsu_coprocessor_get_pmic_vbus(coprocessor_handle, &vbus);
+        if (tanmatsu_coprocessor_get_pmic_vbus(coprocessor_handle, &vbus) != ESP_OK) {
+            set_label("Failed to read vbus");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         uint16_t ichgr;
-        tanmatsu_coprocessor_get_pmic_ichgr(coprocessor_handle, &ichgr);
+        if (tanmatsu_coprocessor_get_pmic_ichgr(coprocessor_handle, &ichgr) != ESP_OK) {
+            set_label("Failed to read ichgr");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         bool last, latch;
-        tanmatsu_coprocessor_get_pmic_communication_fault(coprocessor_handle, &last, &latch);
+        if (tanmatsu_coprocessor_get_pmic_communication_fault(coprocessor_handle, &last, &latch) != ESP_OK) {
+            set_label("Failed to read PMIC comm fault state");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         bool chrg_disable_setting;
         uint8_t chrg_speed;
-        tanmatsu_coprocessor_get_pmic_charging_control(coprocessor_handle, &chrg_disable_setting, &chrg_speed);
+        if (tanmatsu_coprocessor_get_pmic_charging_control(coprocessor_handle, &chrg_disable_setting, &chrg_speed) !=
+            ESP_OK) {
+            set_label("Failed to read charging control");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         bool battery_attached, usb_attached, chrg_disabled;
         uint8_t chrg_status;
-        tanmatsu_coprocessor_get_pmic_charging_status(coprocessor_handle, &battery_attached, &usb_attached,
-                                                      &chrg_disabled, &chrg_status);
+        if (tanmatsu_coprocessor_get_pmic_charging_status(coprocessor_handle, &battery_attached, &usb_attached,
+                                                          &chrg_disabled, &chrg_status) != ESP_OK) {
+            set_label("Failed to read charging status");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (tanmatsu_coprocessor_get_real_time(coprocessor_handle, &rtc) != ESP_OK) {
+            set_label("Failed to read RTC");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
         if (faults.watchdog | faults.boost | faults.chrg_input | faults.chrg_thermal | faults.chrg_safety |
             faults.batt_ovp | faults.ntc_cold | faults.ntc_hot | faults.ntc_boost) {
-            printf("Faults: %s %s %s %s %s %s %s %s %s\r\n", faults.watchdog ? "WATCHDOG" : "",
+            printf("Active faults: %s %s %s %s %s %s %s %s %s\r\n", faults.watchdog ? "WATCHDOG" : "",
                    faults.boost ? "BOOST" : "", faults.chrg_input ? "CHRG_INPUT" : "",
                    faults.chrg_thermal ? "CHRG_THERMAL" : "", faults.chrg_safety ? "CHRG_SAFETY" : "",
                    faults.batt_ovp ? "BATT_OVP" : "", faults.ntc_cold ? "NTC_COLD" : "",
@@ -709,8 +755,8 @@ void app_main(void) {
             : (chrg_status == TANMATSU_CHARGE_STATUS_CHARGE_TERMINATION_DONE) ? "charging done"
                                                                               : "unknown");
 
-        char buffer[1024] = {0};
-        sprintf(buffer,
+        char buffer2[1024] = {0};
+        sprintf(buffer2,
                 "Battery voltage: %u mV\r\n"
                 "System voltage: %u mV\r\n"
                 "USB voltage: %u mV\r\n"
@@ -730,6 +776,12 @@ void app_main(void) {
                 : (chrg_status == TANMATSU_CHARGE_STATUS_FAST_CHARGING)           ? "fast charging"
                 : (chrg_status == TANMATSU_CHARGE_STATUS_CHARGE_TERMINATION_DONE) ? "charging done"
                                                                                   : "unknown");
+
+        char buffer[2048] = {0};
+        sprintf(buffer,
+                "%s\r\n"
+                "RTC: %" PRIu32 "\r\n",
+                buffer2, rtc);
 
         lvgl_lock();
         if (status_label) {

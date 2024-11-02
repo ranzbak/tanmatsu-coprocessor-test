@@ -3,7 +3,7 @@ dependencies:
   lvgl/lvgl: "^9.2.0" 
   espressif/freetype: "^2.13.0~3" 
   nicolaielectronics/mipi_dsi_abstraction: "^0.0.3"
-  nicolaielectronics/tanmatsu_coprocessor: "^0.3.0"
+  nicolaielectronics/tanmatsu_coprocessor: "^0.3.1"
   ## Required IDF version
   idf:
     version: ">=5.3.1"
