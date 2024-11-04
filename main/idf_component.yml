@@ -1,7 +1,8 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  lvgl/lvgl: "^9.2.0" 
-  espressif/freetype: "^2.13.0~3" 
+  # lvgl/lvgl: "^9.2.0" 
+  slint/slint: ">=1.2.0"
+  # espressif/freetype: "^2.13.0~3" 
   nicolaielectronics/mipi_dsi_abstraction: "^0.0.3"
   nicolaielectronics/tanmatsu_coprocessor: "^0.3.1"
   ## Required IDF version

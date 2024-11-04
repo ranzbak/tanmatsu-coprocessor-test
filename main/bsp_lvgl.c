@@ -20,6 +20,7 @@
 #include "freertos/projdefs.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hal/lcd_types.h"
 #include "indev/lv_indev.h"
 #include "lv_demos.h"
 #include "lv_init.h"

@@ -1,0 +1,40 @@
+import { VerticalBox , Button, AboutSlint, TextEdit } from "std-widgets.slint";
+export component AppWindow inherits Window {
+    in property txt-edit <=> txtEdit.text;
+    in property rtc-val <=> rtcText.text;
+    callback request-button-clicked();
+    VerticalBox {
+        forward-focus: txtEdit;
+        AboutSlint { }
+
+        rtcText := Text {
+            font-size: 14px;
+            text: "not set";
+        }
+
+        txtEdit := TextEdit {
+            font-size: 14px;
+            width: parent.width;
+            height: parent.height / 4;
+            text: "placeholder";
+        }
+
+        rect := Rectangle {
+            height: 100px;
+            background: btn.pressed ? green : red;
+            Text {
+                text: "Hello World";
+                font-size: 18px;
+                horizontal-alignment: center;
+            }
+        }
+
+        btn := Button {
+            height: 100px;
+            text: "Press me!";
+            clicked => {
+                root.request-button-clicked();
+            }
+        }
+    }
+}
